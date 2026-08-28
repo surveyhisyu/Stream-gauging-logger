@@ -21,8 +21,12 @@ TARGET_URL = (
 )
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data")
-OUTPUT_CSV = os.path.join(OUTPUT_DIR, "water_level_log.csv")
 RAW_HTML_DEBUG = os.path.join(OUTPUT_DIR, "last_page.html")  # デバッグ用の最新HTML保存
+
+
+def get_output_csv_path(now: datetime.datetime) -> str:
+    """実行した年月に応じて 'data/YYYY-MM.csv' のパスを返す(月ごとにファイルを分ける)"""
+    return os.path.join(OUTPUT_DIR, f"{now:%Y-%m}.csv")
 
 
 def fetch_rendered_html(url: str, wait_ms: int = 8000) -> str:
@@ -55,7 +59,9 @@ def extract_tables(html: str):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_dt = datetime.datetime.now()
+    now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    output_csv = get_output_csv_path(now_dt)
 
     try:
         html = fetch_rendered_html(TARGET_URL)
@@ -73,8 +79,8 @@ def main():
         print("[WARN] テーブルが見つかりませんでした。data/last_page.html を確認してください。")
         return
 
-    file_exists = os.path.isfile(OUTPUT_CSV)
-    with open(OUTPUT_CSV, "a", newline="", encoding="utf-8-sig") as f:
+    file_exists = os.path.isfile(output_csv)
+    with open(output_csv, "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(["取得日時", "テーブル番号", "行番号", "内容"])
@@ -82,7 +88,7 @@ def main():
             for r_idx, row in enumerate(table):
                 writer.writerow([now, t_idx, r_idx, " | ".join(row)])
 
-    print(f"[OK] {now} 時点のデータを {OUTPUT_CSV} に追記しました。(テーブル数: {len(tables)})")
+    print(f"[OK] {now} 時点のデータを {output_csv} に追記しました。(テーブル数: {len(tables)})")
 
 
 if __name__ == "__main__":
