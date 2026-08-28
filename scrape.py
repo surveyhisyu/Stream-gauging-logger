@@ -34,3 +34,81 @@ def fetch_rendered_html(url: str, wait_ms: int = 8000) -> str:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=60000)
+        # SPAの描画完了を待つための追加待機
+        page.wait_for_timeout(wait_ms)
+        html = page.content()
+        browser.close()
+        return html
+
+
+def extract_tables(html: str):
+    """ページ内の全<table>を [ [row1cells...], [row2cells...], ... ] のリストで返す"""
+    # サイト上では矢印アイコンで表示されている部分が、テキスト抽出すると
+    # "arrow_downward" のようなアイコン名の文字列になってしまうため、
+    # 見やすい矢印記号に変換する
+    ICON_TEXT_MAP = {
+        "arrow_downward": "↓",  # 水位低下
+        "arrow_upward": "↑",    # 水位上昇
+        "arrow_forward": "→",   # 横ばい
+        "arrow_back": "←",
+    }
+
+    def normalize_icon_text(text: str) -> str:
+        for name, symbol in ICON_TEXT_MAP.items():
+            if name in text:
+                text = text.replace(name, f" {symbol}")
+        return text.strip()
+
+    soup = BeautifulSoup(html, "html.parser")
+    tables = []
+    for table in soup.find_all("table"):
+        rows = []
+        for tr in table.find_all("tr"):
+            cells = [
+                normalize_icon_text(c.get_text(strip=True))
+                for c in tr.find_all(["th", "td"])
+            ]
+            if any(cells):
+                rows.append(cells)
+        if rows:
+            tables.append(rows)
+    return tables
+
+
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    now_dt = datetime.datetime.now()
+    now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    output_csv = get_output_csv_path(now_dt)
+
+    try:
+        html = fetch_rendered_html(TARGET_URL)
+    except Exception as e:
+        print(f"[ERROR] ページ取得に失敗しました: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # デバッグ用に最新の取得結果を毎回上書き保存(中身が空だった場合の調査用)
+    with open(RAW_HTML_DEBUG, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    tables = extract_tables(html)
+
+    if not tables:
+        print("[WARN] テーブルが見つかりませんでした。data/last_page.html を確認してください。")
+        return
+
+    file_exists = os.path.isfile(output_csv)
+    with open(output_csv, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["取得日時", "テーブル番号", "行番号", "内容"])
+        for t_idx, table in enumerate(tables):
+            for r_idx, row in enumerate(table):
+                writer.writerow([now, t_idx, r_idx, " | ".join(row)])
+
+    print(f"[OK] {now} 時点のデータを {output_csv} に追記しました。(テーブル数: {len(tables)})")
+
+
+if __name__ == "__main__":
+    main()
