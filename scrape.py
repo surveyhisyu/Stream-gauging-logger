@@ -36,7 +36,12 @@ def fetch_rendered_html(url: str, wait_ms: int = 8000) -> str:
     """PlaywrightでSPAを開き、レンダリング後のHTMLを返す"""
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        # 実行環境(GitHub Actionsのサーバー)がUTCで動いているため、
+        # 何も指定しないとページ側のJavaScriptが「今」をUTCとして判断してしまい、
+        # 日本時間の最新データが「まだ来ていない未来のデータ」として
+        # 切り捨てられてしまう。そのためタイムゾーンを明示的に日本時間にする。
+        context = browser.new_context(timezone_id="Asia/Tokyo", locale="ja-JP")
+        page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=60000)
         # SPAの描画完了を待つための追加待機
         page.wait_for_timeout(wait_ms)
