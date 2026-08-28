@@ -101,11 +101,23 @@ def main():
     file_exists = os.path.isfile(output_csv)
     with open(output_csv, "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["取得日時", "テーブル番号", "行番号", "内容"])
+        header_written = file_exists
         for t_idx, table in enumerate(tables):
-            for r_idx, row in enumerate(table):
-                writer.writerow([now, t_idx, r_idx, " | ".join(row)])
+            if not table:
+                continue
+            # テーブルの1行目(ページ自体の見出し: 日付/時刻/水位[m]など)を
+            # そのままCSVの列名として使い、2行目以降を実データとして書き込む
+            column_headers = table[0]
+            # サイト上は新しい時刻が上に表示される(降順)ため、
+            # 古い→新しいの昇順になるよう反転させる
+            data_rows = list(reversed(table[1:]))
+
+            if not header_written:
+                writer.writerow(["取得日時", "テーブル番号"] + column_headers)
+                header_written = True
+
+            for row in data_rows:
+                writer.writerow([now, t_idx] + row)
 
     print(f"[OK] {now} 時点のデータを {output_csv} に追記しました。(テーブル数: {len(tables)})")
 
