@@ -10,9 +10,12 @@ import csv
 import datetime
 import os
 import sys
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+
+JST = ZoneInfo("Asia/Tokyo")
 
 # ↓ 監視したいページのURL。itmkndCd/ofcCd/obsCd/fld を変えれば別地点にも流用可能
 TARGET_URL = (
@@ -78,7 +81,7 @@ def extract_tables(html: str):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    now_dt = datetime.datetime.now()
+    now_dt = datetime.datetime.now(JST)
     now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
     output_csv = get_output_csv_path(now_dt)
 
