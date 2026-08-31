@@ -327,12 +327,21 @@
       statusLine.classList.remove("is-error");
 
       const path = `data/${name}/${name}-${month}.csv`;
-      dlLink.href = rawUrl(path);
-      dlLink.setAttribute("download", `${name}-${month}.csv`);
 
       const res = await fetch(rawUrl(path) + `?t=${Date.now()}`);
       if (!res.ok) throw new Error(`CSVの取得に失敗 (${res.status})`);
       const text = await res.text();
+
+      // raw.githubusercontent.com は別ドメインのため <a download> が効かない。
+      // 取得済みのテキストからBlobを作り、それをダウンロードリンクにする。
+      const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+      if (dlLink.dataset.blobUrl) {
+        URL.revokeObjectURL(dlLink.dataset.blobUrl);
+      }
+      const blobUrl = URL.createObjectURL(blob);
+      dlLink.href = blobUrl;
+      dlLink.dataset.blobUrl = blobUrl;
+      dlLink.setAttribute("download", `${name}-${month}.csv`);
 
       const parsed = Papa.parse(text.trim(), { skipEmptyLines: true });
       const rows = parsed.data;
