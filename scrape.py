@@ -4,6 +4,17 @@
 
 対象URLはJavaScriptで描画されるSPAのため、requestsではなくPlaywrightで
 実際にレンダリングしてからテーブルを読み取る。
+
+【重複防止について】
+このページは毎回「直近50件程度」の観測値をまとめて返してくるため、
+実行間隔がそれより短いと同じ日時のデータが何度も取得されてしまう。
+そのため、CSVに書き込む前に「(テーブル番号, 日付, 時刻) の組がすでに
+ファイルに存在するかどうか」をチェックし、存在する行は書き込まないようにしている。
+
+なお、このページの表は「日付」列がグループの先頭行にしか入らず、
+以降の行は空欄(横棒などではなく単に空)になる仕様になっている。
+そのため、既存CSVを読み込むときも新規データを書き込むときも、
+「直前に見つかった日付を引き継ぐ」処理(キャリーフォワード)が必要になる。
 """
 
 import csv
@@ -84,6 +95,59 @@ def extract_tables(html: str):
     return tables
 
 
+def load_existing_keys(csv_path: str):
+    """
+    既存CSVを読み込み、すでに書き込み済みの (テーブル番号, 日付, 時刻) の
+    組をsetで返す。日付が空欄の行は直前の日付を引き継いで解決する。
+
+    ファイルが存在しない場合は空のsetを返す。
+    """
+    keys = set()
+    if not os.path.isfile(csv_path):
+        return keys
+
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header is None:
+            return keys
+
+        try:
+            acq_idx = header.index("取得日時")
+            table_idx_col = header.index("テーブル番号")
+            date_idx = header.index("日付")
+            time_idx = header.index("時刻")
+        except ValueError:
+            # ヘッダーの形式が想定と違う場合は安全側に倒して空setを返す
+            # (この場合、重複チェックはできないがスクリプト自体は動く)
+            print(
+                "[WARN] 既存CSVのヘッダーが想定形式と異なるため、"
+                "重複チェックをスキップします。",
+                file=sys.stderr,
+            )
+            return keys
+
+        last_block_key = None  # (取得日時, テーブル番号) が変わったらリセット
+        last_date = None
+
+        for row in reader:
+            if len(row) <= max(acq_idx, table_idx_col, date_idx, time_idx):
+                continue
+
+            block_key = (row[acq_idx], row[table_idx_col])
+            if block_key != last_block_key:
+                # 新しい取得回・新しいテーブルの先頭に来たので日付をリセット
+                last_block_key = block_key
+                last_date = None
+
+            if row[date_idx]:
+                last_date = row[date_idx]
+
+            keys.add((row[table_idx_col], last_date, row[time_idx]))
+
+    return keys
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     now_dt = datetime.datetime.now(JST)
@@ -106,7 +170,13 @@ def main():
         print("[WARN] テーブルが見つかりませんでした。data/last_page.html を確認してください。")
         return
 
+    # 書き込み済みの (テーブル番号, 日付, 時刻) をあらかじめ読み込んでおく
+    existing_keys = load_existing_keys(output_csv)
+
     file_exists = os.path.isfile(output_csv)
+    written_count = 0
+    skipped_count = 0
+
     with open(output_csv, "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         header_written = file_exists
@@ -123,10 +193,38 @@ def main():
                 writer.writerow(["取得日時", "テーブル番号"] + column_headers)
                 header_written = True
 
-            for row in data_rows:
-                writer.writerow([now, t_idx] + row)
+            try:
+                date_idx = column_headers.index("日付")
+                time_idx = column_headers.index("時刻")
+            except ValueError:
+                # 日付・時刻列が見つからない表は重複チェックできないので
+                # そのまま全行書き込む(従来の挙動)
+                date_idx = None
+                time_idx = None
 
-    print(f"[OK] {now} 時点のデータを {output_csv} に追記しました。(テーブル数: {len(tables)})")
+            last_date = None  # このテーブル内でのキャリーフォワード用
+            table_key = str(t_idx)
+
+            for row in data_rows:
+                if date_idx is not None and time_idx is not None and len(row) > max(date_idx, time_idx):
+                    if row[date_idx]:
+                        last_date = row[date_idx]
+                    time_value = row[time_idx]
+                    key = (table_key, last_date, time_value)
+
+                    if key in existing_keys:
+                        skipped_count += 1
+                        continue  # すでに記録済みの日時なので書き込まない
+
+                    existing_keys.add(key)
+
+                writer.writerow([now, t_idx] + row)
+                written_count += 1
+
+    print(
+        f"[OK] {now} 時点のデータを {output_csv} に追記しました。"
+        f"(テーブル数: {len(tables)}, 新規: {written_count}行, 重複スキップ: {skipped_count}行)"
+    )
 
 
 if __name__ == "__main__":
