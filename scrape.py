@@ -1,20 +1,28 @@
 """
 川の防災情報(river.go.jp)の観測ページをヘッドレスブラウザで開き、
-ページ内の表(観測値一覧)をすべて抽出してCSVに1行(1回分)ずつ追記するスクリプト。
+ページ内の表(観測値一覧)をすべて抽出してCSVに保存するスクリプト。
 
 対象URLはJavaScriptで描画されるSPAのため、requestsではなくPlaywrightで
 実際にレンダリングしてからテーブルを読み取る。
 
-【重複防止について】
+【重複防止・並び順について】
 このページは毎回「直近50件程度」の観測値をまとめて返してくるため、
 実行間隔がそれより短いと同じ日時のデータが何度も取得されてしまう。
-そのため、CSVに書き込む前に「(テーブル番号, 日付, 時刻) の組がすでに
-ファイルに存在するかどうか」をチェックし、存在する行は書き込まないようにしている。
 
-なお、このページの表は「日付」列がグループの先頭行にしか入らず、
-以降の行は空欄(横棒などではなく単に空)になる仕様になっている。
-そのため、既存CSVを読み込むときも新規データを書き込むときも、
-「直前に見つかった日付を引き継ぐ」処理(キャリーフォワード)が必要になる。
+また、単純にファイルの末尾に追記していくと、
+「1回分のデータの中では新しい時刻が上」なのに
+「実行回をまたぐと古い実行のブロックが上、新しい実行のブロックが下」
+という、ねじれた並び順になってしまう。
+
+そこで、このスクリプトは追記ではなく、
+  1. 既存CSVの中身をすべて読み込む
+  2. 今回スクレイプした新しいデータを合体させる
+  3. (テーブル番号, 日付, 時刻) をキーに重複を排除する
+     (同じ日時のデータが複数あれば、より新しく取得したものを採用)
+  4. 日付・時刻が新しい順に並べ直す
+  5. ファイル全体を書き直す
+という方式にしている。これにより、ファイル全体が常に
+「一番上が最新、下に行くほど古い」という一貫した順序になる。
 """
 
 import csv
@@ -95,22 +103,28 @@ def extract_tables(html: str):
     return tables
 
 
-def load_existing_keys(csv_path: str):
+def load_existing_records(csv_path: str):
     """
-    既存CSVを読み込み、すでに書き込み済みの (テーブル番号, 日付, 時刻) の
-    組をsetで返す。日付が空欄の行は直前の日付を引き継いで解決する。
+    既存CSVを読み込み、レコードのdictを返す。
 
-    ファイルが存在しない場合は空のsetを返す。
+    戻り値: { (テーブル番号, 日付, 時刻): {"取得日時": ..., "values": [...]} }
+
+    日付が空欄の行は、直前(同じ 取得日時・テーブル番号のブロック内)の
+    日付を引き継いで解決する。
+    ファイルが存在しない場合や、ヘッダーが想定と違う場合は空dictを返す。
+    戻り値と一緒に、元のCSVの列名(header)も返す。
     """
-    keys = set()
+    records = {}
+    header = None
+
     if not os.path.isfile(csv_path):
-        return keys
+        return records, header
 
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
         header = next(reader, None)
         if header is None:
-            return keys
+            return records, None
 
         try:
             acq_idx = header.index("取得日時")
@@ -118,16 +132,14 @@ def load_existing_keys(csv_path: str):
             date_idx = header.index("日付")
             time_idx = header.index("時刻")
         except ValueError:
-            # ヘッダーの形式が想定と違う場合は安全側に倒して空setを返す
-            # (この場合、重複チェックはできないがスクリプト自体は動く)
             print(
                 "[WARN] 既存CSVのヘッダーが想定形式と異なるため、"
-                "重複チェックをスキップします。",
+                "このファイルは無視して新規作成扱いにします。",
                 file=sys.stderr,
             )
-            return keys
+            return {}, None
 
-        last_block_key = None  # (取得日時, テーブル番号) が変わったらリセット
+        last_block_key = None
         last_date = None
 
         for row in reader:
@@ -136,16 +148,40 @@ def load_existing_keys(csv_path: str):
 
             block_key = (row[acq_idx], row[table_idx_col])
             if block_key != last_block_key:
-                # 新しい取得回・新しいテーブルの先頭に来たので日付をリセット
                 last_block_key = block_key
                 last_date = None
 
             if row[date_idx]:
                 last_date = row[date_idx]
 
-            keys.add((row[table_idx_col], last_date, row[time_idx]))
+            key = (row[table_idx_col], last_date, row[time_idx])
+            # 「取得日時」「テーブル番号」を除いた、日付・時刻・水位などの
+            # データ部分だけを values として保持する
+            values = [
+                v for i, v in enumerate(row)
+                if i not in (acq_idx, table_idx_col)
+            ]
+            # values内での日付列のインデックスを再計算して補完する
+            data_date_idx = date_idx - sum(
+                1 for i in (acq_idx, table_idx_col) if i < date_idx
+            )
+            values[data_date_idx] = last_date  # 空欄だった日付を補完しておく
 
-    return keys
+            records[key] = {"取得日時": row[acq_idx], "values": values}
+
+    return records, header
+
+
+def date_time_sort_key(key):
+    """(テーブル番号, 日付, 時刻) を新しい順(降順)にソートするためのキーを作る"""
+    _table, date_str, time_str = key
+    try:
+        month, day = date_str.split("/")
+        hour, minute = time_str.split(":")
+        return (int(month), int(day), int(hour), int(minute))
+    except (ValueError, AttributeError):
+        # パースできない場合は最後に回す
+        return (0, 0, 0, 0)
 
 
 def main():
@@ -170,60 +206,72 @@ def main():
         print("[WARN] テーブルが見つかりませんでした。data/last_page.html を確認してください。")
         return
 
-    # 書き込み済みの (テーブル番号, 日付, 時刻) をあらかじめ読み込んでおく
-    existing_keys = load_existing_keys(output_csv)
+    # 既存データを読み込む(なければ空)
+    records, existing_header = load_existing_records(output_csv)
 
-    file_exists = os.path.isfile(output_csv)
-    written_count = 0
-    skipped_count = 0
+    new_count = 0
+    updated_count = 0
+    header = existing_header
 
-    with open(output_csv, "a", newline="", encoding="utf-8-sig") as f:
+    for t_idx, table in enumerate(tables):
+        if not table:
+            continue
+        column_headers = table[0]
+        data_rows = table[1:]
+
+        if header is None:
+            header = ["取得日時", "テーブル番号"] + column_headers
+
+        try:
+            date_idx = column_headers.index("日付")
+            time_idx = column_headers.index("時刻")
+        except ValueError:
+            date_idx = None
+            time_idx = None
+
+        last_date = None
+        table_key = str(t_idx)
+
+        for row in data_rows:
+            if date_idx is not None and time_idx is not None and len(row) > max(date_idx, time_idx):
+                if row[date_idx]:
+                    last_date = row[date_idx]
+                time_value = row[time_idx]
+                key = (table_key, last_date, time_value)
+
+                values = list(row)
+                values[date_idx] = last_date  # 空欄だった日付を補完
+
+                if key in records:
+                    updated_count += 1
+                else:
+                    new_count += 1
+
+                # 常に最新の取得分で上書き(値が更新されている可能性に備える)
+                records[key] = {"取得日時": now, "values": values}
+            else:
+                # 日付・時刻列がない特殊な表はキー化できないのでそのまま追加のみ扱い
+                # (通常は発生しない想定)
+                pass
+
+    if header is None:
+        print("[WARN] ヘッダー情報を決定できませんでした。")
+        return
+
+    # 新しい時刻が上に来るように並べ替え
+    sorted_keys = sorted(records.keys(), key=date_time_sort_key, reverse=True)
+
+    with open(output_csv, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        header_written = file_exists
-        for t_idx, table in enumerate(tables):
-            if not table:
-                continue
-            # テーブルの1行目(ページ自体の見出し: 日付/時刻/水位[m]など)を
-            # そのままCSVの列名として使い、2行目以降を実データとして書き込む
-            column_headers = table[0]
-            # サイト上の表示順そのまま(新しい時刻が上=降順)で書き込む
-            data_rows = table[1:]
-
-            if not header_written:
-                writer.writerow(["取得日時", "テーブル番号"] + column_headers)
-                header_written = True
-
-            try:
-                date_idx = column_headers.index("日付")
-                time_idx = column_headers.index("時刻")
-            except ValueError:
-                # 日付・時刻列が見つからない表は重複チェックできないので
-                # そのまま全行書き込む(従来の挙動)
-                date_idx = None
-                time_idx = None
-
-            last_date = None  # このテーブル内でのキャリーフォワード用
-            table_key = str(t_idx)
-
-            for row in data_rows:
-                if date_idx is not None and time_idx is not None and len(row) > max(date_idx, time_idx):
-                    if row[date_idx]:
-                        last_date = row[date_idx]
-                    time_value = row[time_idx]
-                    key = (table_key, last_date, time_value)
-
-                    if key in existing_keys:
-                        skipped_count += 1
-                        continue  # すでに記録済みの日時なので書き込まない
-
-                    existing_keys.add(key)
-
-                writer.writerow([now, t_idx] + row)
-                written_count += 1
+        writer.writerow(header)
+        for key in sorted_keys:
+            record = records[key]
+            table_key = key[0]
+            writer.writerow([record["取得日時"], table_key] + record["values"])
 
     print(
-        f"[OK] {now} 時点のデータを {output_csv} に追記しました。"
-        f"(テーブル数: {len(tables)}, 新規: {written_count}行, 重複スキップ: {skipped_count}行)"
+        f"[OK] {now} 時点のデータを {output_csv} に反映しました。"
+        f"(新規: {new_count}行, 更新: {updated_count}行, 合計: {len(records)}行)"
     )
 
 
