@@ -69,14 +69,15 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data")
 def get_output_csv_path(now: datetime.datetime, name: Optional[str]) -> str:
     """
     実行した年月・地点名に応じてCSVの保存パスを返す(月ごとにファイルを分ける)。
-    'data/<name>-YYYY-MM.csv' を返す(フォルダ分けはせず data/ 直下に保存)。
+    'data/<name>/<name>-YYYY-MM.csv' を返す(地点ごとにフォルダ分けしつつ、
+    ファイル名にも地点名を入れることで、ファイル単体を見ても地点がわかるようにする)。
     """
-    return os.path.join(OUTPUT_DIR, f"{name}-{now:%Y-%m}.csv")
+    return os.path.join(OUTPUT_DIR, name, f"{name}-{now:%Y-%m}.csv")
 
 
 def get_debug_html_path(name: Optional[str]) -> str:
     """デバッグ用の最新HTML保存パスを地点ごとに返す"""
-    return os.path.join(OUTPUT_DIR, f"{name}-last_page.html")
+    return os.path.join(OUTPUT_DIR, name, f"{name}-last_page.html")
 
 
 def fetch_rendered_html(url: str, wait_ms: int = 8000) -> str:
