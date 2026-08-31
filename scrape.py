@@ -45,17 +45,17 @@ from playwright.sync_api import sync_playwright
 JST = ZoneInfo("Asia/Tokyo")
 
 # ↓ 監視したい観測地点のリスト。(名前, URL) のタプルを追加すれば地点を増やせる。
-#   name を指定すると、その地点は data/<name>/YYYY-MM.csv に保存される。
+#   name を指定すると、その地点は data/<name>-YYYY-MM.csv に保存される。
 TARGETS = [
     {
-        "name": "nishisato_bridge",  # Nishisato Bridge(既存の観測地点)
+        "name": "nishisato",  # Nishisato Bridge(既存の観測地点)
         "url": (
             "https://www.river.go.jp/kawabou/pcfull/tm"
             "?itmkndCd=4&ofcCd=21558&obsCd=1&isCurrent=true&fld=0"
         ),
     },
     {
-        "name": "nakayama_bridge",  # Nakayama Bridge
+        "name": "nakayama",  # Nakayama Bridge
         "url": (
             "https://www.river.go.jp/kawabou/pcfull/tm"
             "?itmkndCd=300&ofcCd=21000&obsCd=2100000183&isCurrent=true&fld=0"
@@ -69,14 +69,14 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data")
 def get_output_csv_path(now: datetime.datetime, name: Optional[str]) -> str:
     """
     実行した年月・地点名に応じてCSVの保存パスを返す(月ごとにファイルを分ける)。
-    'data/<name>/YYYY-MM.csv' を返す。
+    'data/<name>-YYYY-MM.csv' を返す(フォルダ分けはせず data/ 直下に保存)。
     """
-    return os.path.join(OUTPUT_DIR, name, f"{now:%Y-%m}.csv")
+    return os.path.join(OUTPUT_DIR, f"{name}-{now:%Y-%m}.csv")
 
 
 def get_debug_html_path(name: Optional[str]) -> str:
     """デバッグ用の最新HTML保存パスを地点ごとに返す"""
-    return os.path.join(OUTPUT_DIR, name, "last_page.html")
+    return os.path.join(OUTPUT_DIR, f"{name}-last_page.html")
 
 
 def fetch_rendered_html(url: str, wait_ms: int = 8000) -> str:
