@@ -5,6 +5,13 @@
 対象URLはJavaScriptで描画されるSPAのため、requestsではなくPlaywrightで
 実際にレンダリングしてからテーブルを読み取る。
 
+【複数地点への対応について】
+TARGETS リストに (名前, URL) を追加するだけで、複数の観測地点を
+1回の実行でまとめて処理できる。地点ごとに保存先フォルダを分けるので、
+それぞれ独立したCSVとして記録される(既存の地点は後方互換のため
+これまで通り data/YYYY-MM.csv に保存され、新しく追加した地点は
+data/<地点名>/YYYY-MM.csv に保存される)。
+
 【重複防止・並び順について】
 このページは毎回「直近50件程度」の観測値をまとめて返してくるため、
 実行間隔がそれより短いと同じ日時のデータが何度も取得されてしまう。
@@ -29,6 +36,7 @@ import csv
 import datetime
 import os
 import sys
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
@@ -36,19 +44,39 @@ from playwright.sync_api import sync_playwright
 
 JST = ZoneInfo("Asia/Tokyo")
 
-# ↓ 監視したいページのURL。itmkndCd/ofcCd/obsCd/fld を変えれば別地点にも流用可能
-TARGET_URL = (
-    "https://www.river.go.jp/kawabou/pcfull/tm"
-    "?itmkndCd=4&ofcCd=21558&obsCd=1&isCurrent=true&fld=0"
-)
+# ↓ 監視したい観測地点のリスト。(名前, URL) のタプルを追加すれば地点を増やせる。
+#   name を指定すると、その地点は data/<name>/YYYY-MM.csv に保存される。
+TARGETS = [
+    {
+        "name": "nishisato_bridge",  # Nishisato Bridge(既存の観測地点)
+        "url": (
+            "https://www.river.go.jp/kawabou/pcfull/tm"
+            "?itmkndCd=4&ofcCd=21558&obsCd=1&isCurrent=true&fld=0"
+        ),
+    },
+    {
+        "name": "nakayama_bridge",  # Nakayama Bridge
+        "url": (
+            "https://www.river.go.jp/kawabou/pcfull/tm"
+            "?itmkndCd=300&ofcCd=21000&obsCd=2100000183&isCurrent=true&fld=0"
+        ),
+    },
+]
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data")
-RAW_HTML_DEBUG = os.path.join(OUTPUT_DIR, "last_page.html")  # デバッグ用の最新HTML保存
 
 
-def get_output_csv_path(now: datetime.datetime) -> str:
-    """実行した年月に応じて 'data/YYYY-MM.csv' のパスを返す(月ごとにファイルを分ける)"""
-    return os.path.join(OUTPUT_DIR, f"{now:%Y-%m}.csv")
+def get_output_csv_path(now: datetime.datetime, name: Optional[str]) -> str:
+    """
+    実行した年月・地点名に応じてCSVの保存パスを返す(月ごとにファイルを分ける)。
+    'data/<name>/YYYY-MM.csv' を返す。
+    """
+    return os.path.join(OUTPUT_DIR, name, f"{now:%Y-%m}.csv")
+
+
+def get_debug_html_path(name: Optional[str]) -> str:
+    """デバッグ用の最新HTML保存パスを地点ごとに返す"""
+    return os.path.join(OUTPUT_DIR, name, "last_page.html")
 
 
 def fetch_rendered_html(url: str, wait_ms: int = 8000) -> str:
@@ -184,26 +212,30 @@ def date_time_sort_key(key):
         return (0, 0, 0, 0)
 
 
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    now_dt = datetime.datetime.now(JST)
-    now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-    output_csv = get_output_csv_path(now_dt)
+def process_target(target: dict, now_dt: datetime.datetime, now: str) -> None:
+    """1つの観測地点(target)についてスクレイプ→保存までを行う"""
+    name = target["name"]
+    url = target["url"]
+    label = name
+
+    output_csv = get_output_csv_path(now_dt, name)
+    debug_html_path = get_debug_html_path(name)
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
 
     try:
-        html = fetch_rendered_html(TARGET_URL)
+        html = fetch_rendered_html(url)
     except Exception as e:
-        print(f"[ERROR] ページ取得に失敗しました: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"[ERROR] [{label}] ページ取得に失敗しました: {e}", file=sys.stderr)
+        return
 
     # デバッグ用に最新の取得結果を毎回上書き保存(中身が空だった場合の調査用)
-    with open(RAW_HTML_DEBUG, "w", encoding="utf-8") as f:
+    with open(debug_html_path, "w", encoding="utf-8") as f:
         f.write(html)
 
     tables = extract_tables(html)
 
     if not tables:
-        print("[WARN] テーブルが見つかりませんでした。data/last_page.html を確認してください。")
+        print(f"[WARN] [{label}] テーブルが見つかりませんでした。{debug_html_path} を確認してください。")
         return
 
     # 既存データを読み込む(なければ空)
@@ -255,7 +287,7 @@ def main():
                 pass
 
     if header is None:
-        print("[WARN] ヘッダー情報を決定できませんでした。")
+        print(f"[WARN] [{label}] ヘッダー情報を決定できませんでした。")
         return
 
     # 新しい時刻が上に来るように並べ替え
@@ -270,9 +302,18 @@ def main():
             writer.writerow([record["取得日時"], table_key] + record["values"])
 
     print(
-        f"[OK] {now} 時点のデータを {output_csv} に反映しました。"
+        f"[OK] [{label}] {now} 時点のデータを {output_csv} に反映しました。"
         f"(新規: {new_count}行, 更新: {updated_count}行, 合計: {len(records)}行)"
     )
+
+
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    now_dt = datetime.datetime.now(JST)
+    now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    for target in TARGETS:
+        process_target(target, now_dt, now)
 
 
 if __name__ == "__main__":
