@@ -12,24 +12,23 @@ TARGETS リストに (名前, URL) を追加するだけで、複数の観測地
 これまで通り data/YYYY-MM.csv に保存され、新しく追加した地点は
 data/<地点名>/YYYY-MM.csv に保存される)。
 
-【重複防止・並び順について】
-このページは毎回「直近50件程度」の観測値をまとめて返してくるため、
-実行間隔がそれより短いと同じ日時のデータが何度も取得されてしまう。
+【重複防止・並び順・月またぎについて】
+このページは毎回「直近の観測値」をまとめて返してくるため、
+実行間隔がそれより短いと同じ日時のデータが何度も取得される。
+また地点によっては(例: 6時間おきの観測地点)1回のスクレイプで
+過去1週間以上のデータが返ってくることもあり、月をまたいだ直後は
+新しい月のファイルに前の月のデータが混ざってしまう問題があった。
 
-また、単純にファイルの末尾に追記していくと、
-「1回分のデータの中では新しい時刻が上」なのに
-「実行回をまたぐと古い実行のブロックが上、新しい実行のブロックが下」
-という、ねじれた並び順になってしまう。
-
-そこで、このスクリプトは追記ではなく、
-  1. 既存CSVの中身をすべて読み込む
-  2. 今回スクレイプした新しいデータを合体させる
+そこで、このスクリプトは以下の方式で保存する。
+  1. スクレイプした各行について、その行の「実際の日付」から
+     対象となる年月を判定する(実行時点の月と違えば前月のデータとみなす)
+  2. 行ごとに、対応する年月のCSVファイル(月ごとに分かれている)を
+     読み込み、そこにマージする
   3. (テーブル番号, 日付, 時刻) をキーに重複を排除する
      (同じ日時のデータが複数あれば、より新しく取得したものを採用)
-  4. 日付・時刻が新しい順に並べ直す
-  5. ファイル全体を書き直す
-という方式にしている。これにより、ファイル全体が常に
-「一番上が最新、下に行くほど古い」という一貫した順序になる。
+  4. 日付・時刻が新しい順に並べ直してファイルを書き直す
+これにより、8月31日のデータは8月のファイルに、9月1日のデータは
+9月のファイルに、それぞれ正しく振り分けられる。
 """
 
 import csv
@@ -66,13 +65,34 @@ TARGETS = [
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
-def get_output_csv_path(now: datetime.datetime, name: Optional[str]) -> str:
+def resolve_year_month(date_str: str, now_dt: datetime.datetime):
     """
-    実行した年月・地点名に応じてCSVの保存パスを返す(月ごとにファイルを分ける)。
-    'data/<name>/<name>-YYYY-MM.csv' を返す(地点ごとにフォルダ分けしつつ、
-    ファイル名にも地点名を入れることで、ファイル単体を見ても地点がわかるようにする)。
+    表内の「MM/DD」形式の日付から、対象となる (年, 月) を推測する。
+
+    観測ページは実行時点(now_dt)に近い日付のデータを返す前提で、
+    - 日付の月が今月と同じなら、今年の今月として扱う
+    - 違う場合は「先月」のデータとみなす(1月なら前年12月に繰り上げる)
+    これにより、月をまたいだ直後の実行でも、古い月のデータは
+    正しく古い月のファイルに、新しい月のデータは新しい月のファイルに
+    それぞれ振り分けられる。
     """
-    return os.path.join(OUTPUT_DIR, name, f"{name}-{now:%Y-%m}.csv")
+    try:
+        month = int(date_str.split("/")[0])
+    except (ValueError, AttributeError, IndexError):
+        return now_dt.year, now_dt.month  # パース失敗時は今月扱いにする
+
+    if month == now_dt.month:
+        return now_dt.year, now_dt.month
+
+    # 今月と違う月 → 前月のデータとみなす
+    if now_dt.month == 1:
+        return now_dt.year - 1, 12
+    return now_dt.year, now_dt.month - 1
+
+
+def get_output_csv_path_for_month(year: int, month: int, name: str) -> str:
+    """年月・地点名を指定してCSVパスを組み立てる"""
+    return os.path.join(OUTPUT_DIR, name, f"{name}-{year:04d}-{month:02d}.csv")
 
 
 def get_debug_html_path(name: Optional[str]) -> str:
@@ -219,9 +239,8 @@ def process_target(target: dict, now_dt: datetime.datetime, now: str) -> None:
     url = target["url"]
     label = name
 
-    output_csv = get_output_csv_path(now_dt, name)
     debug_html_path = get_debug_html_path(name)
-    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    os.makedirs(os.path.dirname(debug_html_path), exist_ok=True)
 
     try:
         html = fetch_rendered_html(url)
@@ -239,21 +258,29 @@ def process_target(target: dict, now_dt: datetime.datetime, now: str) -> None:
         print(f"[WARN] [{label}] テーブルが見つかりませんでした。{debug_html_path} を確認してください。")
         return
 
-    # 既存データを読み込む(なければ空)
-    records, existing_header = load_existing_records(output_csv)
+    # スクレイプ結果を「行の実際の日付」に基づいて月ごとのバケツに振り分ける。
+    # bucket_key = (year, month) -> { key: {"取得日時":..., "values":[...]} }
+    buckets = {}
+    bucket_headers = {}
+    new_counts = {}
+    updated_counts = {}
 
-    new_count = 0
-    updated_count = 0
-    header = existing_header
+    def get_bucket(year: int, month: int):
+        bucket_key = (year, month)
+        if bucket_key not in buckets:
+            path = get_output_csv_path_for_month(year, month, name)
+            records, existing_header = load_existing_records(path)
+            buckets[bucket_key] = records
+            bucket_headers[bucket_key] = existing_header
+            new_counts[bucket_key] = 0
+            updated_counts[bucket_key] = 0
+        return buckets[bucket_key]
 
     for t_idx, table in enumerate(tables):
         if not table:
             continue
         column_headers = table[0]
         data_rows = table[1:]
-
-        if header is None:
-            header = ["取得日時", "テーブル番号"] + column_headers
 
         try:
             date_idx = column_headers.index("日付")
@@ -270,42 +297,54 @@ def process_target(target: dict, now_dt: datetime.datetime, now: str) -> None:
                 if row[date_idx]:
                     last_date = row[date_idx]
                 time_value = row[time_idx]
-                key = (table_key, last_date, time_value)
 
+                year, month = resolve_year_month(last_date, now_dt)
+                bucket_key = (year, month)
+                records = get_bucket(year, month)
+                if bucket_headers[bucket_key] is None:
+                    bucket_headers[bucket_key] = ["取得日時", "テーブル番号"] + column_headers
+
+                key = (table_key, last_date, time_value)
                 values = list(row)
                 values[date_idx] = last_date  # 空欄だった日付を補完
 
                 if key in records:
-                    updated_count += 1
+                    updated_counts[bucket_key] += 1
                 else:
-                    new_count += 1
+                    new_counts[bucket_key] += 1
 
                 # 常に最新の取得分で上書き(値が更新されている可能性に備える)
                 records[key] = {"取得日時": now, "values": values}
             else:
-                # 日付・時刻列がない特殊な表はキー化できないのでそのまま追加のみ扱い
+                # 日付・時刻列がない特殊な表はキー化できないのでスキップ
                 # (通常は発生しない想定)
                 pass
 
-    if header is None:
-        print(f"[WARN] [{label}] ヘッダー情報を決定できませんでした。")
-        return
+    # バケツごとにファイルへ書き出す
+    for bucket_key, records in buckets.items():
+        year, month = bucket_key
+        header = bucket_headers[bucket_key]
+        if header is None:
+            continue
 
-    # 新しい時刻が上に来るように並べ替え
-    sorted_keys = sorted(records.keys(), key=date_time_sort_key, reverse=True)
+        path = get_output_csv_path_for_month(year, month, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    with open(output_csv, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        for key in sorted_keys:
-            record = records[key]
-            table_key = key[0]
-            writer.writerow([record["取得日時"], table_key] + record["values"])
+        sorted_keys = sorted(records.keys(), key=date_time_sort_key, reverse=True)
 
-    print(
-        f"[OK] [{label}] {now} 時点のデータを {output_csv} に反映しました。"
-        f"(新規: {new_count}行, 更新: {updated_count}行, 合計: {len(records)}行)"
-    )
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for key in sorted_keys:
+                record = records[key]
+                table_key = key[0]
+                writer.writerow([record["取得日時"], table_key] + record["values"])
+
+        print(
+            f"[OK] [{label}] {now} 時点のデータを {path} に反映しました。"
+            f"(新規: {new_counts[bucket_key]}行, 更新: {updated_counts[bucket_key]}行, "
+            f"合計: {len(records)}行)"
+        )
 
 
 def main():
