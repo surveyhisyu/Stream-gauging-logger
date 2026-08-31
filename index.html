@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>river-logger | 観測データ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root {
+    --river-deep: #10333d;
+    --river-mid: #1c5c66;
+    --river-glass: #4f9cab;
+    --sand: #efe6d8;
+    --sand-line: #ded1bb;
+    --ink: #1b2523;
+    --amber: #c17c3a;
+    --danger: #b3502f;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--sand);
+    color: var(--ink);
+    font-family: "Hiragino Sans", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+  }
+
+  header {
+    background: linear-gradient(180deg, var(--river-deep) 0%, var(--river-mid) 100%);
+    color: var(--sand);
+    padding: 56px 24px 72px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  header::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 46px;
+    background: var(--sand);
+    clip-path: polygon(0 60%, 5% 45%, 12% 65%, 20% 40%, 28% 62%, 36% 42%, 44% 64%,
+      52% 44%, 60% 66%, 68% 46%, 76% 63%, 84% 42%, 92% 65%, 100% 48%, 100% 100%, 0 100%);
+  }
+
+  .header-inner {
+    max-width: 880px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 2;
+  }
+
+  .eyebrow-plain {
+    font-size: 14px;
+    letter-spacing: 0.02em;
+    color: var(--river-glass);
+    margin: 0 0 10px;
+  }
+
+  h1 {
+    font-family: Georgia, "Hiragino Mincho ProN", serif;
+    font-size: clamp(28px, 4vw, 40px);
+    line-height: 1.3;
+    margin: 0 0 14px;
+    font-weight: 600;
+  }
+
+  header p.lede {
+    font-size: 15.5px;
+    line-height: 1.8;
+    max-width: 60ch;
+    color: #d6e6e6;
+    margin: 0;
+  }
+
+  main {
+    max-width: 880px;
+    margin: -30px auto 0;
+    padding: 0 24px 80px;
+    position: relative;
+    z-index: 3;
+  }
+
+  .station {
+    background: #fff;
+    border: 1px solid var(--sand-line);
+    border-radius: 4px;
+    padding: 28px 28px 32px;
+    margin-bottom: 32px;
+    box-shadow: 0 1px 0 rgba(27, 37, 35, 0.03);
+  }
+
+  .station-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+    border-bottom: 1px solid var(--sand-line);
+    padding-bottom: 16px;
+    margin-bottom: 20px;
+  }
+
+  .station-name {
+    font-family: Georgia, "Hiragino Mincho ProN", serif;
+    font-size: 22px;
+    margin: 0;
+  }
+
+  .station-meta {
+    font-size: 13px;
+    color: #6b7876;
+    margin: 4px 0 0;
+  }
+
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  select {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 7px 10px;
+    border: 1px solid var(--sand-line);
+    border-radius: 3px;
+    background: #fdfbf7;
+    color: var(--ink);
+  }
+
+  .dl-link {
+    font-size: 14px;
+    color: var(--river-mid);
+    text-decoration: none;
+    border: 1px solid var(--river-mid);
+    padding: 6px 14px;
+    border-radius: 3px;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .dl-link:hover { background: var(--river-mid); color: #fff; }
+
+  .chart-wrap {
+    position: relative;
+    height: 260px;
+    margin-bottom: 6px;
+  }
+
+  .status-line {
+    font-size: 13px;
+    color: #8a938f;
+    min-height: 18px;
+  }
+
+  .status-line.is-error { color: var(--danger); }
+
+  .latest-value {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 4px 0 18px;
+  }
+
+  .latest-value .num {
+    font-family: Georgia, serif;
+    font-size: 34px;
+    font-weight: 600;
+    color: var(--river-deep);
+  }
+
+  .latest-value .unit {
+    font-size: 14px;
+    color: #6b7876;
+  }
+
+  .latest-value .at {
+    font-size: 13px;
+    color: #8a938f;
+    margin-left: auto;
+  }
+
+  footer {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 0 24px 60px;
+    font-size: 13px;
+    color: #8a938f;
+    line-height: 1.8;
+  }
+
+  footer a { color: var(--river-mid); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <p class="eyebrow-plain">nisizatoriver-logger</p>
+    <h1>川の観測データ</h1>
+    <p class="lede">
+      川の防災情報(river.go.jp)から定期的に取得している水位・潮位のデータです。
+      グラフは自動で最新の月を表示します。元のCSVはそれぞれのカードからダウンロードできます。
+    </p>
+  </div>
+</header>
+
+<main>
+
+  <section class="station" id="station-nishisato" data-name="nishisato" data-label="Nishisato Bridge" data-value-hint="水位">
+    <div class="station-head">
+      <div>
+        <h2 class="station-name">Nishisato Bridge</h2>
+        <p class="station-meta">西里橋・水位観測</p>
+      </div>
+      <div class="controls">
+        <select class="month-select" aria-label="表示する月を選択"></select>
+        <a class="dl-link" href="#" download>CSVをダウンロード</a>
+      </div>
+    </div>
+    <div class="latest-value">
+      <span class="num">—</span>
+      <span class="unit"></span>
+      <span class="at"></span>
+    </div>
+    <div class="chart-wrap"><canvas></canvas></div>
+    <p class="status-line">読み込み中…</p>
+  </section>
+
+  <section class="station" id="station-nakayama" data-name="nakayama" data-label="Nakayama Bridge" data-value-hint="堤防天端からの高さ">
+    <div class="station-head">
+      <div>
+        <h2 class="station-name">Nakayama Bridge</h2>
+        <p class="station-meta">中山橋・堤防天端からの高さ</p>
+      </div>
+      <div class="controls">
+        <select class="month-select" aria-label="表示する月を選択"></select>
+        <a class="dl-link" href="#" download>CSVをダウンロード</a>
+      </div>
+    </div>
+    <div class="latest-value">
+      <span class="num">—</span>
+      <span class="unit"></span>
+      <span class="at"></span>
+    </div>
+    <div class="chart-wrap"><canvas></canvas></div>
+    <p class="status-line">読み込み中…</p>
+  </section>
+
+</main>
+
+<footer>
+  データ出典: <a href="https://www.river.go.jp/" target="_blank" rel="noopener">川の防災情報(国土交通省)</a>。
+  このページはGitHub Actionsで定期取得したCSVを表示しているだけの個人用ツールです。
+</footer>
+
+<script>
+(function () {
+  const REPO_OWNER = "surveyhisyu";
+  const REPO_NAME = "nisizatoriver-logger";
+  const BRANCH = "main";
+
+  function rawUrl(path) {
+    return `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}/${path}`;
+  }
+
+  function apiListUrl(dirPath) {
+    return `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${dirPath}?ref=${BRANCH}`;
+  }
+
+  // "nishisato-2026-08.csv" -> "2026-08"
+  function extractMonth(filename, stationName) {
+    const m = filename.match(new RegExp(`${stationName}-(\\d{4}-\\d{2})\\.csv$`));
+    return m ? m[1] : null;
+  }
+
+  function parseValueColumn(headerRow) {
+    // 取得日時, テーブル番号, 日付, 時刻 の次に来る観測値列を使う
+    const skip = new Set(["取得日時", "テーブル番号", "日付", "時刻"]);
+    for (const col of headerRow) {
+      if (!skip.has(col)) return col;
+    }
+    return null;
+  }
+
+  function parseNumeric(raw) {
+    if (raw == null) return null;
+    const cleaned = String(raw).replace(/[↑↓→←]/g, "").trim();
+    const n = parseFloat(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  async function initStation(section) {
+    const name = section.dataset.name;
+    const select = section.querySelector(".month-select");
+    const dlLink = section.querySelector(".dl-link");
+    const statusLine = section.querySelector(".status-line");
+    const canvas = section.querySelector("canvas");
+    const numEl = section.querySelector(".latest-value .num");
+    const unitEl = section.querySelector(".latest-value .unit");
+    const atEl = section.querySelector(".latest-value .at");
+    let chart = null;
+
+    async function listMonths() {
+      const res = await fetch(apiListUrl(`data/${name}`));
+      if (!res.ok) throw new Error(`ファイル一覧の取得に失敗 (${res.status})`);
+      const items = await res.json();
+      const months = items
+        .map((item) => extractMonth(item.name, name))
+        .filter(Boolean)
+        .sort()
+        .reverse();
+      return months;
+    }
+
+    async function loadMonth(month) {
+      statusLine.textContent = "読み込み中…";
+      statusLine.classList.remove("is-error");
+
+      const path = `data/${name}/${name}-${month}.csv`;
+      dlLink.href = rawUrl(path);
+      dlLink.setAttribute("download", `${name}-${month}.csv`);
+
+      const res = await fetch(rawUrl(path) + `?t=${Date.now()}`);
+      if (!res.ok) throw new Error(`CSVの取得に失敗 (${res.status})`);
+      const text = await res.text();
+
+      const parsed = Papa.parse(text.trim(), { skipEmptyLines: true });
+      const rows = parsed.data;
+      if (rows.length < 2) throw new Error("データが空です");
+
+      const header = rows[0];
+      const dateIdx = header.indexOf("日付");
+      const timeIdx = header.indexOf("時刻");
+      const valueCol = parseValueColumn(header);
+      const valueIdx = header.indexOf(valueCol);
+
+      const dataRows = rows.slice(1)
+        .map((r) => ({
+          label: `${r[dateIdx]} ${r[timeIdx]}`,
+          value: parseNumeric(r[valueIdx]),
+          date: r[dateIdx],
+          time: r[timeIdx],
+        }))
+        .filter((r) => r.value !== null);
+
+      // CSVは新しい順に並んでいるので、グラフ用に時系列(古い→新しい)に反転
+      dataRows.reverse();
+
+      const labels = dataRows.map((r) => r.label);
+      const values = dataRows.map((r) => r.value);
+
+      if (chart) chart.destroy();
+      chart = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: "#1c5c66",
+            backgroundColor: "rgba(79, 156, 171, 0.15)",
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.25,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: {
+              ticks: { maxTicksLimit: 8, color: "#6b7876", font: { size: 11 } },
+              grid: { display: false },
+            },
+            y: {
+              ticks: { color: "#6b7876", font: { size: 11 } },
+              grid: { color: "#ede4d5" },
+              title: { display: true, text: valueCol, color: "#6b7876", font: { size: 12 } },
+            },
+          },
+        },
+      });
+
+      const latest = dataRows[dataRows.length - 1];
+      numEl.textContent = latest ? latest.value : "—";
+      unitEl.textContent = valueCol || "";
+      atEl.textContent = latest ? `${latest.date} ${latest.time} 時点` : "";
+
+      statusLine.textContent = `${dataRows.length}件のデータを表示中`;
+    }
+
+    try {
+      const months = await listMonths();
+      if (months.length === 0) throw new Error("データファイルが見つかりません");
+
+      select.innerHTML = months.map((m) => `<option value="${m}">${m}</option>`).join("");
+      select.value = months[0];
+
+      select.addEventListener("change", () => {
+        loadMonth(select.value).catch((err) => {
+          statusLine.textContent = err.message;
+          statusLine.classList.add("is-error");
+        });
+      });
+
+      await loadMonth(months[0]);
+    } catch (err) {
+      statusLine.textContent = err.message;
+      statusLine.classList.add("is-error");
+    }
+  }
+
+  document.querySelectorAll(".station").forEach(initStation);
+})();
+</script>
+
+</body>
+</html>
