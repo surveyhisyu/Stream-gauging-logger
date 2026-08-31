@@ -334,7 +334,10 @@
 
       // raw.githubusercontent.com は別ドメインのため <a download> が効かない。
       // 取得済みのテキストからBlobを作り、それをダウンロードリンクにする。
-      const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+      // ExcelなどでUTF-8だと正しく認識されるよう、先頭にBOMを付与する
+      // (fetchでテキスト化する際にBOMが自動的に除去されてしまうため)。
+      const BOM = "\uFEFF";
+      const blob = new Blob([BOM + text], { type: "text/csv;charset=utf-8" });
       if (dlLink.dataset.blobUrl) {
         URL.revokeObjectURL(dlLink.dataset.blobUrl);
       }
