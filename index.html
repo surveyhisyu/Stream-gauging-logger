@@ -223,7 +223,7 @@
         <p class="station-meta">西里橋・水位観測</p>
       </div>
       <div class="controls">
-        <select class="month-select" aria-label="表示する月を選択"></select>
+        <select class="week-select" aria-label="表示する週を選択"></select>
         <a class="dl-link" href="#" download>CSVをダウンロード</a>
       </div>
     </div>
@@ -243,7 +243,27 @@
         <p class="station-meta">中山橋・堤防天端からの高さ</p>
       </div>
       <div class="controls">
-        <select class="month-select" aria-label="表示する月を選択"></select>
+        <select class="week-select" aria-label="表示する週を選択"></select>
+        <a class="dl-link" href="#" download>CSVをダウンロード</a>
+      </div>
+    </div>
+    <div class="latest-value">
+      <span class="num">—</span>
+      <span class="unit"></span>
+      <span class="at"></span>
+    </div>
+    <div class="chart-wrap"><canvas></canvas></div>
+    <p class="status-line">読み込み中…</p>
+  </section>
+
+  <section class="station" id="station-sugoroku" data-name="sugoroku" data-label="Sugoroku" data-value-hint="水位">
+    <div class="station-head">
+      <div>
+        <h2 class="station-name">Sugoroku</h2>
+        <p class="station-meta">双六・水位観測</p>
+      </div>
+      <div class="controls">
+        <select class="week-select" aria-label="表示する週を選択"></select>
         <a class="dl-link" href="#" download>CSVをダウンロード</a>
       </div>
     </div>
@@ -277,10 +297,19 @@
     return `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${dirPath}?ref=${BRANCH}`;
   }
 
-  // "nishisato-2026-08.csv" -> "2026-08"
-  function extractMonth(filename, stationName) {
-    const m = filename.match(new RegExp(`${stationName}-(\\d{4}-\\d{2})\\.csv$`));
+  // "nishisato-2026-08-31_2026-09-06.csv" -> "2026-08-31_2026-09-06"
+  function extractWeek(filename, stationName) {
+    const m = filename.match(
+      new RegExp(`${stationName}-(\\d{4}-\\d{2}-\\d{2}_\\d{4}-\\d{2}-\\d{2})\\.csv$`)
+    );
     return m ? m[1] : null;
+  }
+
+  // "2026-08-31_2026-09-06" -> "08/31 〜 09/06"
+  function formatWeekLabel(week) {
+    const [start, end] = week.split("_");
+    const shorten = (d) => d.slice(5).replace("-", "/"); // "2026-08-31" -> "08/31"
+    return `${shorten(start)} 〜 ${shorten(end)}`;
   }
 
   function parseValueColumn(headerRow) {
@@ -301,7 +330,7 @@
 
   async function initStation(section) {
     const name = section.dataset.name;
-    const select = section.querySelector(".month-select");
+    const select = section.querySelector(".week-select");
     const dlLink = section.querySelector(".dl-link");
     const statusLine = section.querySelector(".status-line");
     const canvas = section.querySelector("canvas");
@@ -310,23 +339,23 @@
     const atEl = section.querySelector(".latest-value .at");
     let chart = null;
 
-    async function listMonths() {
+    async function listWeeks() {
       const res = await fetch(apiListUrl(`data/${name}`));
       if (!res.ok) throw new Error(`ファイル一覧の取得に失敗 (${res.status})`);
       const items = await res.json();
-      const months = items
-        .map((item) => extractMonth(item.name, name))
+      const weeks = items
+        .map((item) => extractWeek(item.name, name))
         .filter(Boolean)
         .sort()
         .reverse();
-      return months;
+      return weeks;
     }
 
-    async function loadMonth(month) {
+    async function loadWeek(week) {
       statusLine.textContent = "読み込み中…";
       statusLine.classList.remove("is-error");
 
-      const path = `data/${name}/${name}-${month}.csv`;
+      const path = `data/${name}/${name}-${week}.csv`;
 
       const res = await fetch(rawUrl(path) + `?t=${Date.now()}`);
       if (!res.ok) throw new Error(`CSVの取得に失敗 (${res.status})`);
@@ -344,7 +373,7 @@
       const blobUrl = URL.createObjectURL(blob);
       dlLink.href = blobUrl;
       dlLink.dataset.blobUrl = blobUrl;
-      dlLink.setAttribute("download", `${name}-${month}.csv`);
+      dlLink.setAttribute("download", `${name}-${week}.csv`);
 
       const parsed = Papa.parse(text.trim(), { skipEmptyLines: true });
       const rows = parsed.data;
@@ -413,20 +442,22 @@
     }
 
     try {
-      const months = await listMonths();
-      if (months.length === 0) throw new Error("データファイルが見つかりません");
+      const weeks = await listWeeks();
+      if (weeks.length === 0) throw new Error("データファイルが見つかりません");
 
-      select.innerHTML = months.map((m) => `<option value="${m}">${m}</option>`).join("");
-      select.value = months[0];
+      select.innerHTML = weeks
+        .map((w) => `<option value="${w}">${formatWeekLabel(w)}</option>`)
+        .join("");
+      select.value = weeks[0];
 
       select.addEventListener("change", () => {
-        loadMonth(select.value).catch((err) => {
+        loadWeek(select.value).catch((err) => {
           statusLine.textContent = err.message;
           statusLine.classList.add("is-error");
         });
       });
 
-      await loadMonth(months[0]);
+      await loadWeek(weeks[0]);
     } catch (err) {
       statusLine.textContent = err.message;
       statusLine.classList.add("is-error");
