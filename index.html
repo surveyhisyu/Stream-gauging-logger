@@ -148,7 +148,7 @@
 
   .chart-wrap {
     position: relative;
-    height: 260px;
+    height: 300px;
     margin-bottom: 6px;
   }
 
@@ -421,7 +421,13 @@
           plugins: { legend: { display: false } },
           scales: {
             x: {
-              ticks: { maxTicksLimit: 8, color: "#6b7876", font: { size: 11 } },
+              ticks: {
+                maxTicksLimit: 12,
+                maxRotation: 90,
+                minRotation: 90,
+                color: "#6b7876",
+                font: { size: 11 },
+              },
               grid: { display: false },
             },
             y: {
